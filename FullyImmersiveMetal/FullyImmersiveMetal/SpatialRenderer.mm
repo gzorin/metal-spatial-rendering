@@ -61,6 +61,7 @@ void SpatialRenderer::makeRenderPipelines(cp_layer_renderer_layout layout) {
         pipelineDescriptor.vertexFunction = vertexFunction;
         pipelineDescriptor.fragmentFunction = fragmentFunction;
         pipelineDescriptor.vertexDescriptor = _globeMesh->vertexDescriptor();
+        pipelineDescriptor.inputPrimitiveTopology = MTLPrimitiveTopologyClassTriangle;
         _contentRenderPipelineState = [_device newRenderPipelineStateWithDescriptor:pipelineDescriptor error:&error];
     }
     {
@@ -69,6 +70,7 @@ void SpatialRenderer::makeRenderPipelines(cp_layer_renderer_layout layout) {
         pipelineDescriptor.vertexFunction = vertexFunction;
         pipelineDescriptor.fragmentFunction = fragmentFunction;
         pipelineDescriptor.vertexDescriptor = _environmentMesh->vertexDescriptor();
+        pipelineDescriptor.inputPrimitiveTopology = MTLPrimitiveTopologyClassTriangle;
         _environmentRenderPipelineState = [_device newRenderPipelineStateWithDescriptor:pipelineDescriptor error:&error];
     }
     
@@ -96,27 +98,36 @@ void SpatialRenderer::drawAndPresent(cp_frame_t frame, cp_drawable_t drawable) {
     _globeMesh->setModelMatrix(modelTransform);
 
     id<MTLCommandBuffer> commandBuffer = [_commandQueue commandBuffer];
+    
+    PoseConstants poseConstants[2] = {
+        poseConstantsForViewIndex(drawable, 0),
+        poseConstantsForViewIndex(drawable, 1)
+    };
+    
+    PoseConstants poseConstantsForEnvironment[2] = {
+        poseConstantsForViewIndex(drawable, 0),
+        poseConstantsForViewIndex(drawable, 1)
+    };
+    
+    poseConstantsForEnvironment[0].viewMatrix.columns[3] = simd_make_float4(0.0, 0.0, 0.0, 1.0);
+    poseConstantsForEnvironment[1].viewMatrix.columns[3] = simd_make_float4(0.0, 0.0, 0.0, 1.0);
+    
+    MTLRenderPassDescriptor *renderPassDescriptor = createRenderPassDescriptor(drawable, 0);
+    id<MTLRenderCommandEncoder> renderCommandEncoder = [commandBuffer renderCommandEncoderWithDescriptor:renderPassDescriptor];
+    
+    [renderCommandEncoder setCullMode:MTLCullModeBack];
 
-    for (int i = 0; i < cp_drawable_get_view_count(drawable); ++i) {
-        MTLRenderPassDescriptor *renderPassDescriptor = createRenderPassDescriptor(drawable, i);
-        id<MTLRenderCommandEncoder> renderCommandEncoder = [commandBuffer renderCommandEncoderWithDescriptor:renderPassDescriptor];
-        
-        [renderCommandEncoder setCullMode:MTLCullModeBack];
-        
-        PoseConstants poseConstants = poseConstantsForViewIndex(drawable, i);
-
-        [renderCommandEncoder setFrontFacingWinding:MTLWindingClockwise];
-        [renderCommandEncoder setDepthStencilState:_backgroundDepthStencilState];
-        [renderCommandEncoder setRenderPipelineState:_environmentRenderPipelineState];
-        _environmentMesh->draw(renderCommandEncoder, poseConstants);
-        
-        [renderCommandEncoder setFrontFacingWinding:MTLWindingCounterClockwise];
-        [renderCommandEncoder setDepthStencilState:_contentDepthStencilState];
-        [renderCommandEncoder setRenderPipelineState:_contentRenderPipelineState];
-        _globeMesh->draw(renderCommandEncoder, poseConstants);
-        
-        [renderCommandEncoder endEncoding];
-    }
+    [renderCommandEncoder setFrontFacingWinding:MTLWindingClockwise];
+    [renderCommandEncoder setDepthStencilState:_backgroundDepthStencilState];
+    [renderCommandEncoder setRenderPipelineState:_environmentRenderPipelineState];
+    _environmentMesh->draw(renderCommandEncoder, &poseConstantsForEnvironment[0], 2);
+    
+    [renderCommandEncoder setFrontFacingWinding:MTLWindingCounterClockwise];
+    [renderCommandEncoder setDepthStencilState:_contentDepthStencilState];
+    [renderCommandEncoder setRenderPipelineState:_contentRenderPipelineState];
+    _globeMesh->draw(renderCommandEncoder, &poseConstants[0], 2);
+    
+    [renderCommandEncoder endEncoding];
 
     cp_drawable_encode_present(drawable, commandBuffer);
 
@@ -132,6 +143,8 @@ MTLRenderPassDescriptor* SpatialRenderer::createRenderPassDescriptor(cp_drawable
     passDescriptor.depthAttachment.texture = cp_drawable_get_depth_texture(drawable, index);
     passDescriptor.depthAttachment.storeAction = MTLStoreActionStore;
 
+
+    passDescriptor.renderTargetArrayLength = cp_drawable_get_view_count(drawable);
     passDescriptor.rasterizationRateMap = cp_drawable_get_rasterization_rate_map(drawable, index);
 
     return passDescriptor;
